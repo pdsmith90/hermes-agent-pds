@@ -104,6 +104,7 @@ _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
 _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
 _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
 _MAX_REFERENCED_SCRIPT_DEPTH = 8
+_BINARY_SNIFF_BYTES = 8192
 _CONTROL_CHARS = frozenset(";&|()")
 
 
@@ -259,6 +260,18 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
         if not stat.S_ISREG(metadata.st_mode):
             return None, True
         if metadata.st_size > _MAX_REFERENCED_SCRIPT_BYTES:
+            # An oversized file that starts with null bytes is a compiled
+            # binary, not a script — most commonly the interpreter itself,
+            # because `_iter_referenced_shell_scripts` yields any executable
+            # containing "/" (e.g. `<venv>/bin/python script.py` yields the
+            # multi-MB CPython binary). The lifecycle pattern scan is
+            # meaningless on machine code, so skip it with "" (never None:
+            # None triggers the remote-read fallback, which would `cat` the
+            # whole binary through the shell). Oversized *text* still fails
+            # closed — it could be a genuine script we cannot afford to scan.
+            head = os.read(descriptor, _BINARY_SNIFF_BYTES)
+            if b"\x00" in head:
+                return "", False
             return None, True
         data = os.read(descriptor, _MAX_REFERENCED_SCRIPT_BYTES + 1)
     except OSError:
